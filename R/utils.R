@@ -247,8 +247,10 @@ sync_remote_file <- function(full_url, output_file, overwrite = FALSE,
 
 #' Synchronises multiple remote files with local paths in parallel
 #'
-#' Uses curl::multi_download for concurrent async I/O downloads.
-#' Falls back to sequential downloads if parallel downloads are disabled.
+#' Uses curl::multi_download for concurrent async I/O downloads, processing
+#' files in batches to avoid overwhelming the remote server with too many
+#' simultaneous connections. Falls back to sequential downloads if parallel
+#' downloads are disabled.
 #'
 #' @param urls A character vector of URLs to download
 #' @param output_files A character vector of local file paths (same length as urls)
@@ -319,31 +321,57 @@ sync_remote_files <- function(urls, output_files, progress = TRUE,
   if (use_parallel && length(urls_to_download) > 1) {
     cli_alert_info("Downloading {length(urls_to_download)} file{?s} in parallel...")
 
-    # Use curl::multi_download for parallel async I/O
-    # Note: multiplex=TRUE enables HTTP/2 multiplexing for concurrent streams
-    results <- multi_download(
-      urls = urls_to_download,
-      destfiles = files_to_download,
-      progress = progress,
-      multiplex = TRUE
+    # Download in batches to avoid overwhelming the server with too many
+    # simultaneous connections. Sending thousands of requests at once causes
+    # the Nectar OpenStack Swift server to reject the excess with HTTP 4xx/5xx.
+    # The batch size can be tuned via options(cellNexus.download_batch_size = N).
+    batch_size <- getOption("cellNexus.download_batch_size", 500L)
+    batches <- split(
+      seq_along(urls_to_download),
+      ceiling(seq_along(urls_to_download) / batch_size)
     )
 
-    # Check for failures.
-    # results$success can be TRUE (ok), FALSE (explicit failure), or NA
-    # (request was still in-progress when multi_run was interrupted, e.g. the
-    # user pressed ESC or the process was killed).  Without the is.na() guard,
-    # leaving partial files on disk that are silently reused on the next run.
-    failed <- is.na(results$success) |
-      !results$success |
-      (!is.na(results$status_code) & results$status_code >= 400)
-    if (any(failed)) {
-      failed_files <- files_to_download[failed]
-      # Clean up failed downloads
-      for (f in failed_files) {
-        if (file.exists(f)) file.remove(f)
+    n_failed_total <- 0L
+    for (batch_idx in seq_along(batches)) {
+      idx <- batches[[batch_idx]]
+      batch_urls <- urls_to_download[idx]
+      batch_files <- files_to_download[idx]
+
+      if (length(batches) > 1L) {
+        cli_alert_info(
+          "Batch {batch_idx}/{length(batches)}: {length(idx)} file{?s}..."
+        )
       }
-      cli_alert_warning("{sum(failed)} file{?s} failed to download")
-      if (!ignore_not_found && sum(failed) == length(urls_to_download)) {
+
+      # Use curl::multi_download for parallel async I/O
+      # Note: multiplex=TRUE enables HTTP/2 multiplexing for concurrent streams
+      results <- multi_download(
+        urls = batch_urls,
+        destfiles = batch_files,
+        progress = progress,
+        multiplex = TRUE
+      )
+
+      # Check for failures.
+      # results$success can be TRUE (ok), FALSE (explicit failure), or NA
+      # (request was still in-progress when multi_run was interrupted, e.g. the
+      # user pressed ESC or the process was killed).  Without the is.na() guard,
+      # leaving partial files on disk that are silently reused on the next run.
+      failed <- is.na(results$success) |
+        !results$success |
+        (!is.na(results$status_code) & results$status_code >= 400)
+      if (any(failed)) {
+        failed_files <- batch_files[failed]
+        for (f in failed_files) {
+          if (file.exists(f)) file.remove(f)
+        }
+        n_failed_total <- n_failed_total + sum(failed)
+      }
+    }
+
+    if (n_failed_total > 0L) {
+      cli_alert_warning("{n_failed_total} file{?s} failed to download")
+      if (!ignore_not_found && n_failed_total == length(urls_to_download)) {
         cli_abort("All downloads failed. Check your network connection.")
       }
     }
