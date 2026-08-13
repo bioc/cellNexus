@@ -3,6 +3,24 @@
 
 \section{News in version 0.99.33}{
 \itemize{
+    \item Batched parallel downloads: \code{sync_remote_files()} now splits large
+    download queues into batches (default 500 files per batch) before passing
+    them to \code{curl::multi_download()}.  Previously, all URLs were submitted
+    in a single call; when requesting multiple assays simultaneously (e.g.\
+    \code{assays = c("counts", "cpm", "rank")} over 1\,000 files = 3\,000
+    requests), the Nectar OpenStack Swift server would reject the excess
+    connections with HTTP 4xx/5xx responses, silently failing thousands of
+    downloads.  Batching keeps each parallel burst below the server's
+    per-account connection threshold.
+    \itemize{
+        \item The batch size defaults to 500 and can be adjusted via
+        \code{options(cellNexus.download_batch_size = N)}.
+        \item When more than one batch is required, a progress message is
+        printed for each batch (e.g.\ \emph{Batch 2/6: 500 files...}).
+        \item Failure counting is now accumulated across all batches so the
+        final warning correctly reports the total number of files that could
+        not be downloaded.
+    }
     \item Cache integrity: \code{sync_remote_file()} and
     \code{sync_remote_files()} now verify that a locally cached file has not
     been partially downloaded or corrupted by comparing its MD5 digest against
