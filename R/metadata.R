@@ -370,22 +370,24 @@ join_census_table <- function(tbl,
 #' @keywords internal
 #' @noRd
 get_census_metadata <- function(census_version) {
-  if (!requireNamespace("cellxgene.census", quietly = TRUE)) {
-    cli_abort(paste(
+  if (!nzchar(system.file(package = "cellxgene.census"))) {
+    cli_abort(c(
       "The {.pkg cellxgene.census} package is required.",
-      "Install it with:",
-      "{.code install.packages('cellxgene.census',",
-      "repos = c('https://chanzuckerberg.r-universe.dev',",
-      "'https://cloud.r-project.org'))}"
+      "i" = paste0(
+        "Install it with: {.code install.packages('cellxgene.census', ",
+        "repos = c('https://chanzuckerberg.r-universe.dev', ",
+        "'https://cloud.r-project.org'))}"
+      )
     ))
   }
-
+  
   cli_alert_info("Opening Census version {census_version}.")
-  census <- cellxgene.census::open_soma(census_version = census_version)
+  open_soma <- getExportedValue("cellxgene.census", "open_soma")
+  census <- open_soma(census_version = census_version)
   on.exit(census$close(), add = TRUE)
-
+  
   metadata <- census$get("census_data")$get("homo_sapiens")$get("obs")
-
+  
   cli_alert_info("Reading Census obs table.")
   census_metadata <- metadata$read(
     value_filter = "is_primary_data == 'TRUE'"
